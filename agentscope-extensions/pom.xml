@@ -32,7 +32,6 @@
 
     <modules>
         <module>agentscope-extensions-a2a</module>
-        <module>agentscope-extensions-autocontext-memory</module>
         <module>agentscope-extensions-skill-git-repository</module>
         <module>agentscope-extensions-mem0</module>
         <module>agentscope-extensions-memory-bailian</module>
@@ -47,8 +46,6 @@
         <module>agentscope-extensions-session-redis</module>
         <module>agentscope-extensions-session-mysql</module>
         <module>agentscope-extensions-training</module>
-        <module>agentscope-micronaut-extensions</module>
-        <module>agentscope-quarkus-extensions</module>
         <module>agentscope-spring-boot-starters</module>
         <module>agentscope-extensions-agui</module>
         <module>agentscope-extensions-chat-completions-web</module>

@@ -15,6 +15,7 @@
  */
 package io.agentscope.harness.agent.memory;
 
+import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
@@ -36,6 +37,7 @@ import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * Manages memory flush operations: extracting long-term memories from a conversation
@@ -43,9 +45,9 @@ import reactor.core.publisher.Mono;
  *
  * <p><b>Two-layer memory model</b> (this class owns only the first layer):
  * <ul>
- *   <li>{@code memory/YYYY-MM-DD.md} — append-only daily ledger. Each compaction's flush
+ *   <li>{@code memory/YYYY-MM-DD.md} - append-only daily ledger. Each compaction's flush
  *       appends a timestamped section here. Written ONLY by this class.</li>
- *   <li>{@code MEMORY.md} — globally curated, deduplicated, size-bounded long-term memory.
+ *   <li>{@code MEMORY.md} - globally curated, deduplicated, size-bounded long-term memory.
  *       Written ONLY by {@link MemoryConsolidator} on a periodic schedule. Treated as
  *       read-only context here.</li>
  * </ul>
@@ -72,9 +74,9 @@ public class MemoryFlushManager {
             - Record relationship context (who works on what, team structure)
             - Ignore routine greetings, tool invocations, and ephemeral status updates
 
-            IMPORTANT — write target and append-only rules:
+            IMPORTANT - write target and append-only rules:
             - You are writing to TODAY'S daily memory ledger (memory/YYYY-MM-DD.md), NOT to \
-            MEMORY.md. The daily ledger is append-only — your output will be appended after the \
+            MEMORY.md. The daily ledger is append-only - your output will be appended after the \
             entries already shown below.
             - MEMORY.md is the curated long-term memory and is shown ONLY as read-only context. \
             Do NOT restate facts already covered by MEMORY.md or by today's earlier entries; a \
@@ -97,21 +99,57 @@ public class MemoryFlushManager {
      * <p>Provides existing MEMORY.md and today's daily file content to the extraction LLM
      * so it can effectively deduplicate and avoid re-extracting known facts.
      */
-    public Mono<Void> flushMemories(List<Msg> messages) {
+    public Mono<Void> flushMemories(RuntimeContext rc, List<Msg> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return Mono.empty();
+        }
+
         String conversationText = serializeMessages(messages);
         if (conversationText.isBlank()) {
             return Mono.empty();
         }
 
-        String existingMemory = readExistingContent(WorkspaceConstants.MEMORY_MD);
+        return Mono.fromCallable(() -> buildFlushInput(rc, conversationText))
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMapMany(flushInput -> model.stream(flushInput, null, null))
+                .reduce(
+                        new StringBuilder(),
+                        (sb, chatResponse) -> {
+                            List<ContentBlock> blocks = chatResponse.getContent();
+                            if (blocks != null) {
+                                for (ContentBlock block : blocks) {
+                                    if (block instanceof TextBlock tb) {
+                                        String t = tb.getText();
+                                        if (t != null) {
+                                            sb.append(t);
+                                        }
+                                    }
+                                }
+                            }
+                            return sb;
+                        })
+                .<Void>flatMap(
+                        sb -> {
+                            String extracted = sb.toString();
+                            if (extracted.isBlank() || extracted.strip().equals("NO_REPLY")) {
+                                log.debug("No memories to flush");
+                                return Mono.<Void>empty();
+                            }
+                            return Mono.<Void>fromRunnable(() -> writeMemoryFiles(rc, extracted))
+                                    .subscribeOn(Schedulers.boundedElastic());
+                        });
+    }
+
+    private List<Msg> buildFlushInput(RuntimeContext rc, String conversationText) {
+        String existingMemory = readExistingContent(rc, WorkspaceConstants.MEMORY_MD);
         String today = LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE);
         String dailyRelPath = WorkspaceConstants.MEMORY_DIR + "/" + today + ".md";
-        String existingDaily = readExistingContent(dailyRelPath);
+        String existingDaily = readExistingContent(rc, dailyRelPath);
 
         StringBuilder userPrompt = new StringBuilder();
         if (!existingMemory.isBlank()) {
             userPrompt
-                    .append("MEMORY.md (read-only curated long-term memory — do NOT restate):\n")
+                    .append("MEMORY.md (read-only curated long-term memory - do NOT restate):\n")
                     .append(existingMemory)
                     .append("\n\n");
         }
@@ -138,34 +176,7 @@ public class MemoryFlushManager {
                         .role(MsgRole.USER)
                         .content(TextBlock.builder().text(userPrompt.toString()).build())
                         .build());
-
-        return model.stream(flushInput, null, null)
-                .reduce(
-                        new StringBuilder(),
-                        (sb, chatResponse) -> {
-                            List<ContentBlock> blocks = chatResponse.getContent();
-                            if (blocks != null) {
-                                for (ContentBlock block : blocks) {
-                                    if (block instanceof TextBlock tb) {
-                                        String t = tb.getText();
-                                        if (t != null) {
-                                            sb.append(t);
-                                        }
-                                    }
-                                }
-                            }
-                            return sb;
-                        })
-                .flatMap(
-                        sb -> {
-                            String extracted = sb.toString();
-                            if (extracted.isBlank() || extracted.strip().equals("NO_REPLY")) {
-                                log.debug("No memories to flush");
-                                return Mono.empty();
-                            }
-                            writeMemoryFiles(extracted);
-                            return Mono.empty();
-                        });
+        return flushInput;
     }
 
     /**
@@ -173,9 +184,9 @@ public class MemoryFlushManager {
      * session are offloaded. Used by the compaction layer to embed the archive location in the
      * summary message so the agent can retrieve full history if needed.
      */
-    public String resolveOffloadPath(String agentId, String sessionId) {
+    public String resolveOffloadPath(RuntimeContext rc, String agentId, String sessionId) {
         try {
-            Path p = workspaceManager.resolveSessionContextFile(agentId, sessionId);
+            Path p = workspaceManager.resolveSessionContextFile(rc, agentId, sessionId);
             return p != null ? p.toString() : "";
         } catch (Exception e) {
             log.debug(
@@ -190,25 +201,39 @@ public class MemoryFlushManager {
     /**
      * Offloads raw messages to the JSONL session tree.
      */
-    public void offloadMessages(List<Msg> messages, String agentId, String sessionId) {
-        offloadToSessionTree(messages, agentId, sessionId);
+    public void offloadMessages(
+            RuntimeContext rc, List<Msg> messages, String agentId, String sessionId) {
+        offloadToSessionTree(rc, messages, agentId, sessionId);
 
         log.debug(
                 "Offloaded {} messages for agent={}, session={}",
                 messages.size(),
                 agentId,
                 sessionId);
-        workspaceManager.updateSessionIndex(agentId, sessionId, "conversation offloaded");
+        workspaceManager.updateSessionIndex(rc, agentId, sessionId, "conversation offloaded");
     }
 
-    private void offloadToSessionTree(List<Msg> messages, String agentId, String sessionId) {
+    private void offloadToSessionTree(
+            RuntimeContext rc, List<Msg> messages, String agentId, String sessionId) {
         try {
-            Path contextFile = workspaceManager.resolveSessionContextFile(agentId, sessionId);
+            Path contextFile = workspaceManager.resolveSessionContextFile(rc, agentId, sessionId);
+            String contextRelPath =
+                    WorkspaceConstants.AGENTS_DIR
+                            + "/"
+                            + agentId
+                            + "/"
+                            + WorkspaceConstants.SESSIONS_DIR
+                            + "/"
+                            + sessionId
+                            + WorkspaceConstants.SESSION_CONTEXT_EXT;
             SessionTree tree =
                     new SessionTree(
-                            contextFile,
-                            workspaceManager.getWorkspace(),
-                            workspaceManager.getFilesystem());
+                                    contextFile,
+                                    workspaceManager.getWorkspace(),
+                                    workspaceManager.getFilesystem(),
+                                    workspaceManager.getIndex(),
+                                    contextRelPath)
+                            .setRuntimeContext(rc);
             tree.load();
             // Sync from remote before appending so that entries written by a previous replica
             // (cross-machine handoff) are included in the merged file pushed to remote.
@@ -257,25 +282,25 @@ public class MemoryFlushManager {
     /**
      * Appends the extracted entries to today's daily memory ledger.
      *
-     * <p>MEMORY.md is intentionally <b>NOT</b> touched here — it is owned by
+     * <p>MEMORY.md is intentionally <b>NOT</b> touched here - it is owned by
      * {@link MemoryConsolidator}, which periodically merges the daily ledgers into a
      * curated, size-bounded MEMORY.md.
      */
-    private void writeMemoryFiles(String content) {
+    private void writeMemoryFiles(RuntimeContext rc, String content) {
         String today = LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE);
 
         String dailyEntry =
                 String.format(
-                        "\n## Memory Flush — %s\n%s\n",
+                        "\n## Memory Flush - %s\n%s\n",
                         java.time.Instant.now().toString(), content);
 
         String dailyRelPath = WorkspaceConstants.MEMORY_DIR + "/" + today + ".md";
-        workspaceManager.appendUtf8WorkspaceRelative(dailyRelPath, dailyEntry);
+        workspaceManager.appendUtf8WorkspaceRelative(rc, dailyRelPath, dailyEntry);
     }
 
-    private String readExistingContent(String relativePath) {
+    private String readExistingContent(RuntimeContext rc, String relativePath) {
         try {
-            String content = workspaceManager.readManagedWorkspaceFileUtf8(relativePath);
+            String content = workspaceManager.readManagedWorkspaceFileUtf8(rc, relativePath);
             return content != null ? content : "";
         } catch (Exception e) {
             log.debug("Could not read {}: {}", relativePath, e.getMessage());
