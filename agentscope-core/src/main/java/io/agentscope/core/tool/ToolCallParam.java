@@ -98,12 +98,20 @@ public class ToolCallParam {
     /**
      * Gets the tool execution context.
      *
-     * @return The execution context derived from RuntimeContext, or null
+     * <p>If the {@link RuntimeContext} already carries a native tool execution context, that
+     * instance is returned directly to preserve legacy reference semantics. Otherwise a bridged
+     * context view is created from the runtime context.
+     *
+     * @return The execution context, or null
      * @deprecated Use {@link #getRuntimeContext()} instead.
      */
     @Deprecated
     public ToolExecutionContext getContext() {
-        return runtimeContext != null ? runtimeContext.asToolExecutionContext() : null;
+        if (runtimeContext == null) {
+            return null;
+        }
+        ToolExecutionContext legacyContext = runtimeContext.getToolExecutionContext();
+        return legacyContext != null ? legacyContext : runtimeContext.asToolExecutionContext();
     }
 
     /**
