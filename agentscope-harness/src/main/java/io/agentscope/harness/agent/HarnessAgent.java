@@ -32,6 +32,7 @@ import io.agentscope.core.model.ExecutionConfig;
 import io.agentscope.core.model.GenerateOptions;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.permission.PermissionContextState;
+import io.agentscope.core.shutdown.GracefulShutdownMiddleware;
 import io.agentscope.core.skill.repository.AgentSkillRepository;
 import io.agentscope.core.state.AgentState;
 import io.agentscope.core.state.AgentStateStore;
@@ -1023,6 +1024,8 @@ public class HarnessAgent implements Agent, AutoCloseable {
         ExecutionConfig toolExecutionConfig;
         GenerateOptions generateOptions;
         final Set<Hook> hooks = new LinkedHashSet<>();
+        // User-visible middleware registrations only; build-time harness middleware is excluded.
+        final List<MiddlewareBase> middlewares = new ArrayList<>();
 
         // ---- Harness orchestration fields ----
 
@@ -1253,7 +1256,7 @@ public class HarnessAgent implements Agent, AutoCloseable {
             // Extension chains. Middlewares are the v2 surface; hooks remain for v1 carry-over.
             List<MiddlewareBase> srcMiddlewares = agent.getMiddlewares();
             if (srcMiddlewares != null && !srcMiddlewares.isEmpty()) {
-                b.middlewares(srcMiddlewares);
+                b.middlewares(filterCopyableMiddlewares(srcMiddlewares));
             }
             List<Hook> srcHooks = agent.getHooks();
             if (srcHooks != null && !srcHooks.isEmpty()) {
@@ -1351,13 +1354,55 @@ public class HarnessAgent implements Agent, AutoCloseable {
         }
 
         public Builder middleware(MiddlewareBase middleware) {
-            inner.middleware(middleware);
+            if (middleware != null) {
+                middlewares.add(middleware);
+                inner.middleware(middleware);
+            }
             return this;
         }
 
         public Builder middlewares(List<? extends MiddlewareBase> middlewares) {
-            inner.middlewares(middlewares);
+            if (middlewares != null) {
+                for (MiddlewareBase middleware : middlewares) {
+                    middleware(middleware);
+                }
+            }
             return this;
+        }
+
+        private static List<MiddlewareBase> filterCopyableMiddlewares(
+                List<MiddlewareBase> middlewares) {
+            // Keep only observable registrations from the source agent.
+            List<MiddlewareBase> copyable = new ArrayList<>(middlewares.size());
+            for (MiddlewareBase middleware : middlewares) {
+                if (middleware != null && !isHarnessRuntimeMiddleware(middleware)) {
+                    copyable.add(middleware);
+                }
+            }
+            return copyable;
+        }
+
+        private static boolean isHarnessRuntimeMiddleware(MiddlewareBase middleware) {
+            return middleware instanceof SandboxLifecycleMiddleware
+                    || middleware instanceof GracefulShutdownMiddleware
+                    || middleware instanceof AgentTraceMiddleware
+                    || middleware instanceof WorkspaceContextMiddleware
+                    || middleware instanceof AtPathExpansionMiddleware
+                    || middleware instanceof MemoryFlushMiddleware
+                    || middleware instanceof MemoryMaintenanceMiddleware
+                    || middleware instanceof CompactionMiddleware
+                    || middleware instanceof ToolResultEvictionMiddleware
+                    || middleware instanceof InboxMiddleware
+                    || middleware instanceof DynamicSubagentsMiddleware
+                    || middleware instanceof SubagentsMiddleware
+                    || middleware instanceof AsyncToolMiddleware
+                    || middleware
+                            instanceof io.agentscope.harness.agent.middleware.PlanModeMiddleware
+                    || middleware
+                            instanceof io.agentscope.harness.agent.middleware.SkillUsageMiddleware
+                    || middleware
+                            instanceof io.agentscope.harness.agent.middleware.SkillCuratorMiddleware
+                    || middleware instanceof HarnessSkillMiddleware;
         }
 
         public Builder stateStore(AgentStateStore stateStore) {
