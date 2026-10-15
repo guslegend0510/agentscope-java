@@ -20,7 +20,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -28,24 +27,6 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
-import io.a2a.server.ServerCallContext;
-import io.a2a.server.agentexecution.AgentExecutor;
-import io.a2a.server.auth.UnauthenticatedUser;
-import io.a2a.server.events.InMemoryQueueManager;
-import io.a2a.server.events.QueueManager;
-import io.a2a.server.requesthandlers.DefaultRequestHandler;
-import io.a2a.server.tasks.InMemoryTaskStore;
-import io.a2a.server.tasks.TaskStateProvider;
-import io.a2a.server.tasks.TaskStore;
-import io.a2a.spec.Message;
-import io.a2a.spec.MessageSendParams;
-import io.a2a.spec.StreamingEventKind;
-import io.a2a.spec.Task;
-import io.a2a.spec.TaskIdParams;
-import io.a2a.spec.TaskNotCancelableError;
-import io.a2a.spec.TaskState;
-import io.a2a.spec.TaskStatus;
-import io.a2a.spec.TextPart;
 import io.agentscope.core.a2a.server.constants.A2aServerConstants;
 import io.agentscope.core.a2a.server.executor.AgentExecuteProperties;
 import io.agentscope.core.a2a.server.executor.AgentScopeAgentExecutor;
@@ -63,9 +44,31 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
+import org.a2aproject.sdk.server.ServerCallContext;
+import org.a2aproject.sdk.server.agentexecution.AgentExecutor;
+import org.a2aproject.sdk.server.auth.UnauthenticatedUser;
+import org.a2aproject.sdk.server.events.InMemoryQueueManager;
+import org.a2aproject.sdk.server.events.MainEventBus;
+import org.a2aproject.sdk.server.events.MainEventBusProcessor;
+import org.a2aproject.sdk.server.events.QueueManager;
+import org.a2aproject.sdk.server.requesthandlers.DefaultRequestHandler;
+import org.a2aproject.sdk.server.tasks.InMemoryTaskStore;
+import org.a2aproject.sdk.server.tasks.TaskStateProvider;
+import org.a2aproject.sdk.server.tasks.TaskStore;
+import org.a2aproject.sdk.spec.CancelTaskParams;
+import org.a2aproject.sdk.spec.Message;
+import org.a2aproject.sdk.spec.MessageSendParams;
+import org.a2aproject.sdk.spec.StreamingEventKind;
+import org.a2aproject.sdk.spec.Task;
+import org.a2aproject.sdk.spec.TaskNotCancelableError;
+import org.a2aproject.sdk.spec.TaskState;
+import org.a2aproject.sdk.spec.TaskStatus;
+import org.a2aproject.sdk.spec.TextPart;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -98,6 +101,18 @@ class AgentScopeA2aRequestHandlerTest {
         handlers.forEach(AgentScopeA2aRequestHandler::close);
     }
 
+    private static Object readField(Class<?> type, Object target, String name) throws Exception {
+        Field field = type.getDeclaredField(name);
+        field.setAccessible(true);
+        return field.get(target);
+    }
+
+    private static DefaultRequestHandler delegateOf(AgentScopeA2aRequestHandler handler)
+            throws Exception {
+        return (DefaultRequestHandler)
+                readField(AgentScopeA2aRequestHandler.class, handler, "delegate");
+    }
+
     /**
      * Helper method to create a AgentScopeA2aRequestHandler and extract its TaskStateProvider
      * through reflection.
@@ -120,7 +135,7 @@ class AgentScopeA2aRequestHandlerTest {
         // Get TaskStateProvider through reflection
         Field queueManagerField = DefaultRequestHandler.class.getDeclaredField("queueManager");
         queueManagerField.setAccessible(true);
-        QueueManager queueManager = (QueueManager) queueManagerField.get(handler);
+        QueueManager queueManager = (QueueManager) queueManagerField.get(delegateOf(handler));
 
         Field taskStateProviderField =
                 InMemoryQueueManager.class.getDeclaredField("taskStateProvider");
@@ -184,7 +199,7 @@ class AgentScopeA2aRequestHandlerTest {
             TaskStore mockTaskStore = mock(TaskStore.class);
             Task mockTask = mock(Task.class);
             when(mockTaskStore.get("task123")).thenReturn(mockTask);
-            when(mockTask.getStatus()).thenReturn(null);
+            when(mockTask.status()).thenReturn(null);
 
             TaskStateProvider taskStateProvider = getTaskStateProvider(mockTaskStore);
 
@@ -205,7 +220,7 @@ class AgentScopeA2aRequestHandlerTest {
             Task mockTask = mock(Task.class);
             TaskStatus mockStatus = mock(TaskStatus.class);
             when(mockTaskStore.get("task123")).thenReturn(mockTask);
-            when(mockTask.getStatus()).thenReturn(mockStatus);
+            when(mockTask.status()).thenReturn(mockStatus);
             when(mockStatus.state()).thenReturn(null);
 
             TaskStateProvider taskStateProvider = getTaskStateProvider(mockTaskStore);
@@ -227,8 +242,8 @@ class AgentScopeA2aRequestHandlerTest {
             Task mockTask = mock(Task.class);
             TaskStatus mockStatus = mock(TaskStatus.class);
             when(mockTaskStore.get("task123")).thenReturn(mockTask);
-            when(mockTask.getStatus()).thenReturn(mockStatus);
-            when(mockStatus.state()).thenReturn(TaskState.WORKING);
+            when(mockTask.status()).thenReturn(mockStatus);
+            when(mockStatus.state()).thenReturn(TaskState.TASK_STATE_WORKING);
 
             TaskStateProvider taskStateProvider = getTaskStateProvider(mockTaskStore);
 
@@ -249,8 +264,8 @@ class AgentScopeA2aRequestHandlerTest {
             Task mockTask = mock(Task.class);
             TaskStatus mockStatus = mock(TaskStatus.class);
             when(mockTaskStore.get("task123")).thenReturn(mockTask);
-            when(mockTask.getStatus()).thenReturn(mockStatus);
-            when(mockStatus.state()).thenReturn(TaskState.COMPLETED);
+            when(mockTask.status()).thenReturn(mockStatus);
+            when(mockStatus.state()).thenReturn(TaskState.TASK_STATE_COMPLETED);
 
             TaskStateProvider taskStateProvider = getTaskStateProvider(mockTaskStore);
 
@@ -288,7 +303,7 @@ class AgentScopeA2aRequestHandlerTest {
             TaskStore mockTaskStore = mock(TaskStore.class);
             Task mockTask = mock(Task.class);
             when(mockTaskStore.get("task123")).thenReturn(mockTask);
-            when(mockTask.getStatus()).thenReturn(null);
+            when(mockTask.status()).thenReturn(null);
 
             TaskStateProvider taskStateProvider = getTaskStateProvider(mockTaskStore);
 
@@ -309,7 +324,7 @@ class AgentScopeA2aRequestHandlerTest {
             Task mockTask = mock(Task.class);
             TaskStatus mockStatus = mock(TaskStatus.class);
             when(mockTaskStore.get("task123")).thenReturn(mockTask);
-            when(mockTask.getStatus()).thenReturn(mockStatus);
+            when(mockTask.status()).thenReturn(mockStatus);
             when(mockStatus.state()).thenReturn(null);
 
             TaskStateProvider taskStateProvider = getTaskStateProvider(mockTaskStore);
@@ -331,8 +346,8 @@ class AgentScopeA2aRequestHandlerTest {
             Task mockTask = mock(Task.class);
             TaskStatus mockStatus = mock(TaskStatus.class);
             when(mockTaskStore.get("task123")).thenReturn(mockTask);
-            when(mockTask.getStatus()).thenReturn(mockStatus);
-            when(mockStatus.state()).thenReturn(TaskState.WORKING);
+            when(mockTask.status()).thenReturn(mockStatus);
+            when(mockStatus.state()).thenReturn(TaskState.TASK_STATE_WORKING);
 
             TaskStateProvider taskStateProvider = getTaskStateProvider(mockTaskStore);
 
@@ -353,8 +368,8 @@ class AgentScopeA2aRequestHandlerTest {
             Task mockTask = mock(Task.class);
             TaskStatus mockStatus = mock(TaskStatus.class);
             when(mockTaskStore.get("task123")).thenReturn(mockTask);
-            when(mockTask.getStatus()).thenReturn(mockStatus);
-            when(mockStatus.state()).thenReturn(TaskState.COMPLETED);
+            when(mockTask.status()).thenReturn(mockStatus);
+            when(mockStatus.state()).thenReturn(TaskState.TASK_STATE_COMPLETED);
 
             TaskStateProvider taskStateProvider = getTaskStateProvider(mockTaskStore);
 
@@ -390,7 +405,7 @@ class AgentScopeA2aRequestHandlerTest {
             // Access the queueManager field from the parent class
             Field queueManagerField = DefaultRequestHandler.class.getDeclaredField("queueManager");
             queueManagerField.setAccessible(true);
-            QueueManager queueManager = (QueueManager) queueManagerField.get(handler);
+            QueueManager queueManager = (QueueManager) queueManagerField.get(delegateOf(handler));
 
             assertNotNull(queueManager);
             assertInstanceOf(InMemoryQueueManager.class, queueManager);
@@ -424,7 +439,7 @@ class AgentScopeA2aRequestHandlerTest {
             // Access the queueManager field from the parent class
             Field queueManagerField = DefaultRequestHandler.class.getDeclaredField("queueManager");
             queueManagerField.setAccessible(true);
-            QueueManager queueManager = (QueueManager) queueManagerField.get(handler);
+            QueueManager queueManager = (QueueManager) queueManagerField.get(delegateOf(handler));
 
             assertNotNull(queueManager);
             assertInstanceOf(InMemoryQueueManager.class, queueManager);
@@ -456,8 +471,8 @@ class AgentScopeA2aRequestHandlerTest {
                                     .agentExecutor(mock(AgentExecutor.class))
                                     .build());
 
-            assertEquals(60, readField(handler, "agentCompletionTimeoutSeconds"));
-            assertEquals(10, readField(handler, "consumptionCompletionTimeoutSeconds"));
+            assertEquals(60, timeout(handler, "agentCompletionTimeoutSeconds"));
+            assertEquals(10, timeout(handler, "consumptionCompletionTimeoutSeconds"));
         }
 
         @Test
@@ -471,30 +486,44 @@ class AgentScopeA2aRequestHandlerTest {
                                     .consumptionCompletionTimeoutSeconds(30)
                                     .build());
 
-            assertEquals(120, readField(handler, "agentCompletionTimeoutSeconds"));
-            assertEquals(30, readField(handler, "consumptionCompletionTimeoutSeconds"));
+            assertEquals(120, timeout(handler, "agentCompletionTimeoutSeconds"));
+            assertEquals(30, timeout(handler, "consumptionCompletionTimeoutSeconds"));
         }
 
         @Test
-        @DisplayName("Should shut down the execution thread pool on close")
+        @DisplayName("Should shut down the thread pools and stop the event processor on close")
         void testCloseShutsDownExecutor() throws Exception {
             AgentScopeA2aRequestHandler handler =
                     track(
                             AgentScopeA2aRequestHandler.builder()
                                     .agentExecutor(mock(AgentExecutor.class))
                                     .build());
-            ExecutorService executor = (ExecutorService) readField(handler, "executor");
+            ExecutorService executor = (ExecutorService) field(handler, "executor");
+            ExecutorService eventConsumerExecutor =
+                    (ExecutorService) field(handler, "eventConsumerExecutor");
+            Thread processorThread =
+                    (Thread)
+                            readField(
+                                    MainEventBusProcessor.class,
+                                    field(handler, "mainEventBusProcessor"),
+                                    "processorThread");
             assertFalse(executor.isShutdown());
+            assertFalse(eventConsumerExecutor.isShutdown());
+            assertTrue(processorThread.isAlive());
 
             handler.close();
 
             assertTrue(executor.isShutdown());
+            assertTrue(eventConsumerExecutor.isShutdown());
+            assertFalse(processorThread.isAlive());
         }
 
-        private Object readField(DefaultRequestHandler handler, String name) throws Exception {
-            Field field = DefaultRequestHandler.class.getDeclaredField(name);
-            field.setAccessible(true);
-            return field.get(handler);
+        private Object field(AgentScopeA2aRequestHandler handler, String name) throws Exception {
+            return readField(AgentScopeA2aRequestHandler.class, handler, name);
+        }
+
+        private Object timeout(AgentScopeA2aRequestHandler handler, String name) throws Exception {
+            return readField(DefaultRequestHandler.class, delegateOf(handler), name);
         }
     }
 
@@ -503,22 +532,23 @@ class AgentScopeA2aRequestHandlerTest {
     class CancelTests {
 
         @Test
-        @DisplayName("A cancel rejected after completion should release its event queue")
-        void testRejectedCancelReleasesItsQueue() throws Exception {
+        @DisplayName("A cancel after completion should be rejected and keep the task completed")
+        void testCancelAfterCompletionIsRejected() throws Exception {
             // Keeps the completed task out of the store, so the cancel passes the SDK's
             // final-state check after the execution completed.
             CountDownLatch storeCompletion = new CountDownLatch(1);
             InMemoryTaskStore taskStore =
                     new InMemoryTaskStore() {
                         @Override
-                        public void save(Task task) {
-                            if (task.getStatus().state().isFinal()) {
+                        public void save(Task task, boolean isReplicated) {
+                            if (task.status().state().isFinal()) {
                                 awaitQuietly(storeCompletion);
                             }
-                            super.save(task);
+                            super.save(task, isReplicated);
                         }
                     };
-            InMemoryQueueManager queueManager = new InMemoryQueueManager(taskStore);
+            MainEventBus mainEventBus = new MainEventBus();
+            InMemoryQueueManager queueManager = new InMemoryQueueManager(taskStore, mainEventBus);
             CountDownLatch completed = new CountDownLatch(1);
             CountDownLatch returnFromExecute = new CountDownLatch(1);
             AgentRunner agentRunner = mock(AgentRunner.class);
@@ -541,6 +571,7 @@ class AgentScopeA2aRequestHandlerTest {
                                                     agentRunner,
                                                     AgentExecuteProperties.builder().build()))
                                     .taskStore(taskStore)
+                                    .mainEventBus(mainEventBus)
                                     .queueManager(queueManager)
                                     .build());
             StreamRecorder stream = new StreamRecorder();
@@ -557,26 +588,29 @@ class AgentScopeA2aRequestHandlerTest {
                         });
                 assertTrue(completed.await(5, TimeUnit.SECONDS));
                 assertTrue(stream.firstEvent.await(5, TimeUnit.SECONDS));
-                String taskId = ((Task) stream.events.get(0)).getId();
-                int requestQueues = queueManager.getActiveChildQueueCount(taskId);
+                String taskId = ((Task) stream.events.get(0)).id();
+                assertEquals(TaskState.TASK_STATE_WORKING, taskStore.get(taskId).status().state());
 
-                assertThrows(
-                        TaskNotCancelableError.class,
-                        () ->
-                                handler.onCancelTask(
-                                        new TaskIdParams(taskId, Map.of()), streamingContext()));
-                assertEquals(
-                        requestQueues,
-                        queueManager.getActiveChildQueueCount(taskId),
-                        "the rejected cancel must close the queue tapped for it");
-
+                // The SDK waits for the events of the cancel, which follow the completion.
+                CompletableFuture<Task> cancel =
+                        CompletableFuture.supplyAsync(
+                                () ->
+                                        handler.onCancelTask(
+                                                new CancelTaskParams(taskId), streamingContext()));
                 storeCompletion.countDown();
+
+                ExecutionException rejected =
+                        assertThrows(
+                                ExecutionException.class, () -> cancel.get(5, TimeUnit.SECONDS));
+                assertInstanceOf(TaskNotCancelableError.class, rejected.getCause());
+                assertEquals(
+                        TaskState.TASK_STATE_COMPLETED, taskStore.get(taskId).status().state());
                 assertTrue(stream.done.await(5, TimeUnit.SECONDS));
                 returnFromExecute.countDown();
-                handler.waitForBackgroundTasks().get(5, TimeUnit.SECONDS);
-                assertNull(
-                        queueManager.get(taskId),
-                        "the task's queue must be released once the request ended");
+                // -1: the task has no open queue left.
+                assertTrue(
+                        waitFor(() -> queueManager.getActiveChildQueueCount(taskId) == -1),
+                        "the queues of the request and the cancel must be closed");
             } finally {
                 storeCompletion.countDown();
                 returnFromExecute.countDown();
@@ -585,8 +619,8 @@ class AgentScopeA2aRequestHandlerTest {
 
         private MessageSendParams userMessage() {
             Message message =
-                    new Message.Builder()
-                            .role(Message.Role.USER)
+                    Message.builder()
+                            .role(Message.Role.ROLE_USER)
                             .parts(new TextPart("hello"))
                             .messageId(UUID.randomUUID().toString())
                             .build();
@@ -629,6 +663,17 @@ class AgentScopeA2aRequestHandlerTest {
         public void onComplete() {
             done.countDown();
         }
+    }
+
+    private static boolean waitFor(BooleanSupplier condition) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (!condition.getAsBoolean()) {
+            if (System.nanoTime() > deadline) {
+                return false;
+            }
+            Thread.sleep(10);
+        }
+        return true;
     }
 
     private static void awaitQuietly(CountDownLatch latch) {

@@ -30,20 +30,12 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import io.a2a.server.events.QueueManager;
-import io.a2a.server.requesthandlers.DefaultRequestHandler;
-import io.a2a.server.requesthandlers.RequestHandler;
-import io.a2a.server.tasks.PushNotificationConfigStore;
-import io.a2a.server.tasks.PushNotificationSender;
-import io.a2a.server.tasks.TaskStore;
-import io.a2a.spec.AgentCard;
-import io.a2a.spec.TransportProtocol;
-import io.a2a.util.Utils;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.a2a.server.card.ConfigurableAgentCard;
 import io.agentscope.core.a2a.server.executor.AgentExecuteProperties;
 import io.agentscope.core.a2a.server.executor.runner.AgentRunner;
 import io.agentscope.core.a2a.server.registry.AgentRegistry;
+import io.agentscope.core.a2a.server.request.AgentScopeA2aRequestHandler;
 import io.agentscope.core.a2a.server.transport.DeploymentProperties;
 import io.agentscope.core.a2a.server.transport.TransportProperties;
 import io.agentscope.core.a2a.server.transport.TransportWrapper;
@@ -55,6 +47,15 @@ import java.util.List;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import org.a2aproject.sdk.jsonrpc.common.json.JsonUtil;
+import org.a2aproject.sdk.server.events.QueueManager;
+import org.a2aproject.sdk.server.requesthandlers.DefaultRequestHandler;
+import org.a2aproject.sdk.server.requesthandlers.RequestHandler;
+import org.a2aproject.sdk.server.tasks.PushNotificationConfigStore;
+import org.a2aproject.sdk.server.tasks.PushNotificationSender;
+import org.a2aproject.sdk.server.tasks.TaskStore;
+import org.a2aproject.sdk.spec.AgentCard;
+import org.a2aproject.sdk.spec.TransportProtocol;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -196,7 +197,7 @@ class AgentScopeA2aServerTest {
 
             assertEquals(
                     server.getAgentCard(),
-                    Utils.OBJECT_MAPPER.readValue(server.getAgentCardJson(), AgentCard.class));
+                    JsonUtil.fromJson(server.getAgentCardJson(), AgentCard.class));
         }
 
         @Test
@@ -513,7 +514,11 @@ class AgentScopeA2aServerTest {
                                                     .consumptionCompletionTimeoutSeconds(30)
                                                     .build())
                                     .build());
-            Object requestHandler = readField(AgentScopeA2aServer.class, server, "requestHandler");
+            Object requestHandler =
+                    readField(
+                            AgentScopeA2aRequestHandler.class,
+                            readField(AgentScopeA2aServer.class, server, "requestHandler"),
+                            "delegate");
 
             assertEquals(
                     120,
@@ -536,7 +541,7 @@ class AgentScopeA2aServerTest {
         private ExecutorService executionExecutor(AgentScopeA2aServer server) throws Exception {
             return (ExecutorService)
                     readField(
-                            DefaultRequestHandler.class,
+                            AgentScopeA2aRequestHandler.class,
                             readField(AgentScopeA2aServer.class, server, "requestHandler"),
                             "executor");
         }
