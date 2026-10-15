@@ -16,8 +16,6 @@
 
 package io.agentscope.core.a2a.server.request;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Flow;
@@ -155,14 +153,7 @@ public class AgentScopeA2aRequestHandler implements RequestHandler, AutoCloseabl
     public void close() {
         executor.shutdownNow();
         eventConsumerExecutor.shutdownNow();
-        try {
-            // Not public: the SDK stops the processor through CDI.
-            Method stop = MainEventBusProcessor.class.getDeclaredMethod("stop");
-            stop.setAccessible(true);
-            stop.invoke(mainEventBusProcessor);
-        } catch (ReflectiveOperationException e) {
-            throw new IllegalStateException("Failed to stop the A2A event processor", e);
-        }
+        SdkInternals.stop(mainEventBusProcessor);
     }
 
     public static Builder builder() {
@@ -302,38 +293,15 @@ public class AgentScopeA2aRequestHandler implements RequestHandler, AutoCloseabl
                     new AgentScopeA2aRequestHandler(
                             delegate, executor, eventConsumerExecutor, mainEventBusProcessor);
             try {
-                setTimeoutProperties(delegate);
+                SdkInternals.setTimeouts(
+                        delegate,
+                        agentCompletionTimeoutSeconds,
+                        consumptionCompletionTimeoutSeconds);
             } catch (RuntimeException e) {
                 result.close();
                 throw e;
             }
             return result;
-        }
-
-        /**
-         * The SDK builder sets fixed timeouts of a few seconds, too short for agents calling
-         * models, and offers no way to change them. Set them by reflection.
-         */
-        private void setTimeoutProperties(DefaultRequestHandler requestHandler) {
-            try {
-                setField(
-                        requestHandler,
-                        "agentCompletionTimeoutSeconds",
-                        agentCompletionTimeoutSeconds);
-                setField(
-                        requestHandler,
-                        "consumptionCompletionTimeoutSeconds",
-                        consumptionCompletionTimeoutSeconds);
-            } catch (ReflectiveOperationException e) {
-                throw new IllegalStateException("Failed to set the A2A request timeouts", e);
-            }
-        }
-
-        private static void setField(DefaultRequestHandler handler, String name, int value)
-                throws ReflectiveOperationException {
-            Field field = DefaultRequestHandler.class.getDeclaredField(name);
-            field.setAccessible(true);
-            field.setInt(handler, value);
         }
     }
 
