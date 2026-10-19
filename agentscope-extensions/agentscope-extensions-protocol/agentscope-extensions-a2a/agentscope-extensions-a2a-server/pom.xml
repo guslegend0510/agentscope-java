@@ -53,6 +53,10 @@
             <artifactId>a2a-java-sdk-transport-jsonrpc</artifactId>
         </dependency>
         <dependency>
+            <groupId>org.a2aproject.sdk</groupId>
+            <artifactId>a2a-java-sdk-compat-0.3-transport-jsonrpc</artifactId>
+        </dependency>
+        <dependency>
             <groupId>io.projectreactor</groupId>
             <artifactId>reactor-test</artifactId>
             <scope>test</scope>

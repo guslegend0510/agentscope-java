@@ -195,12 +195,51 @@ class A2aHttpEndToEndTest {
     }
 
     @Test
-    void requestWithoutProtocolVersionIsRejected() throws Exception {
-        // A2A 0.3 clients send no A2A-Version header; only A2A 1.0 is supported.
+    void agentCardHasTheFieldsA2a03ClientsRead() throws Exception {
+        HttpRequest request =
+                HttpRequest.newBuilder(URI.create(BASE_URL + "/" + ".well-known/agent-card.json"))
+                        .timeout(TIMEOUT)
+                        .GET()
+                        .build();
+
+        JsonNode card =
+                JSON.readTree(
+                        HttpClient.newHttpClient()
+                                .send(request, HttpResponse.BodyHandlers.ofString())
+                                .body());
+
+        String url = card.path("supportedInterfaces").path(0).path("url").asText();
+        assertThat(url).contains(HOST + ":" + PORT);
+        assertThat(card.path("url").asText()).isEqualTo(url);
+        assertThat(card.path("preferredTransport").asText()).isEqualTo("JSONRPC");
+        assertThat(card.path("additionalInterfaces").path(0).path("transport").asText())
+                .isEqualTo("JSONRPC");
+        assertThat(card.path("additionalInterfaces").path(0).path("url").asText()).isEqualTo(url);
+    }
+
+    @Test
+    void requestWithoutProtocolVersionIsAnsweredAsA2a03() throws Exception {
+        // A2A 0.3 clients send no A2A-Version header.
+        JsonNode body =
+                JSON.readTree(
+                        postA2a03(
+                                        "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"tasks/get\","
+                                            + "\"params\":{\"id\":\"missing-task\"}}",
+                                        null)
+                                .body());
+
+        assertThat(body.path("id").asText()).isEqualTo("1");
+        assertThat(body.path("error").path("code").asInt())
+                .isEqualTo(new TaskNotFoundError().getCode());
+    }
+
+    @Test
+    void requestWithUnsupportedProtocolVersionIsRejected() throws Exception {
         HttpRequest request =
                 HttpRequest.newBuilder(URI.create(BASE_URL))
                         .timeout(TIMEOUT)
                         .header("Content-Type", "application/json")
+                        .header("A2A-Version", "2.0")
                         .POST(
                                 HttpRequest.BodyPublishers.ofString(
                                         "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"GetTask\","
@@ -214,6 +253,53 @@ class A2aHttpEndToEndTest {
         assertThat(body.path("id").asText()).isEqualTo("1");
         assertThat(body.path("error").path("code").asInt())
                 .isEqualTo(A2AErrorCodes.VERSION_NOT_SUPPORTED.code());
+    }
+
+    @Test
+    void a2a03BlockingCallReturnsFinalMessage() throws Exception {
+        runner.script(messages -> reply("你好，世界", "你好，", "世界"));
+
+        JsonNode body =
+                JSON.readTree(
+                        postA2a03(a2a03Request("message/send", "你好", "\"blocking\":true"), null)
+                                .body());
+
+        assertThat(body.path("error").isMissingNode()).as(body.toString()).isTrue();
+        JsonNode message = body.path("result");
+        assertThat(message.path("kind").asText()).isEqualTo("message");
+        assertThat(message.path("role").asText()).isEqualTo("agent");
+        assertThat(message.path("parts").path(0).path("text").asText()).isEqualTo("你好，世界");
+        assertThat(texts(runner.requests().get(0))).containsExactly("你好");
+    }
+
+    @Test
+    void a2a03StreamingCallReturnsStreamedText() throws Exception {
+        runner.script(messages -> reply("final reply", "Hello, ", "world"));
+
+        HttpResponse<String> response =
+                postA2a03(a2a03Request("message/stream", "hi", null), "text/event-stream");
+
+        List<JsonNode> events = new ArrayList<>();
+        for (String line : response.body().split("\n")) {
+            if (line.startsWith("data:")) {
+                events.add(JSON.readTree(line.substring("data:".length())));
+            }
+        }
+        assertThat(events).isNotEmpty();
+        assertThat(events)
+                .allSatisfy(
+                        event -> {
+                            assertThat(event.path("id").asText()).isEqualTo("1");
+                            assertThat(event.path("error").isMissingNode())
+                                    .as(event.toString())
+                                    .isTrue();
+                        });
+        assertThat(streamedTexts(events)).containsSubsequence("Hello, ", "world");
+        JsonNode last = events.get(events.size() - 1).path("result");
+        assertThat(last.path("kind").asText()).isEqualTo("status-update");
+        assertThat(last.path("final").asBoolean()).isTrue();
+        assertThat(last.path("status").path("state").asText()).isEqualTo("completed");
+        assertThat(texts(runner.requests().get(0))).containsExactly("hi");
     }
 
     @Test
@@ -444,6 +530,52 @@ class A2aHttpEndToEndTest {
         }
         return HttpClient.newHttpClient()
                 .send(request.build(), HttpResponse.BodyHandlers.ofByteArray());
+    }
+
+    /** Posts {@code body} the way an A2A 0.3 client does, without an A2A-Version header. */
+    private static HttpResponse<String> postA2a03(String body, String accept) throws Exception {
+        HttpRequest.Builder request =
+                HttpRequest.newBuilder(URI.create(BASE_URL))
+                        .timeout(TIMEOUT)
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8));
+        if (accept != null) {
+            request.header("Accept", accept);
+        }
+        return HttpClient.newHttpClient()
+                .send(request.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * An A2A 0.3 JSON-RPC request with id {@code 1} that sends {@code text} as a user message, as
+     * AgentScope clients before A2A 1.0 do: with a null message source for an unnamed message.
+     */
+    private static String a2a03Request(String method, String text, String configuration) {
+        return "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\""
+                + method
+                + "\",\"params\":{\"message\":{\"kind\":\"message\",\"messageId\":\"m-1\","
+                + "\"role\":\"user\",\"parts\":[{\"kind\":\"text\",\"text\":\""
+                + text
+                + "\",\"metadata\":{\"_agentscope_block_type\":\"text\","
+                + "\"_agentscope_msg_source\":null}}]}"
+                + (configuration == null ? "" : ",\"configuration\":{" + configuration + "}")
+                + "}}";
+    }
+
+    /** The texts of the streamed A2A 0.3 messages, artifacts and status messages, in order. */
+    private static List<String> streamedTexts(List<JsonNode> events) {
+        List<String> texts = new ArrayList<>();
+        for (JsonNode event : events) {
+            JsonNode result = event.path("result");
+            for (JsonNode parts :
+                    List.of(
+                            result.path("parts"),
+                            result.path("artifact").path("parts"),
+                            result.path("status").path("message").path("parts"))) {
+                parts.forEach(part -> texts.add(part.path("text").asText()));
+            }
+        }
+        return texts;
     }
 
     private static A2aAgent newAgent(ClientConfig clientConfig) {

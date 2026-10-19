@@ -10,7 +10,7 @@ zh_link: /v2/zh/integration/protocol/a2a
 
 The client can be used on its own. The server also requires the client module for message conversion.
 
-A2A 0.3 is not supported: the client cannot call A2A 0.3 agents, and the server rejects requests from A2A 0.3 clients, which send no `A2A-Version` header, with a version error. The server does not support `ListTasks` yet, since it does not authenticate callers.
+The server accepts both A2A 1.0 and A2A 0.3 requests: a request without an `A2A-Version` header, as A2A 0.3 clients send them, or with a 0.x version is handled as an A2A 0.3 one, and the Agent Card also has the `url`, `preferredTransport` and `additionalInterfaces` that A2A 0.3 clients read; other versions are rejected with a version error. To accept A2A 1.0 only, reject requests without an `A2A-Version` header at your gateway. The client cannot call A2A 0.3 agents yet. The server does not support `ListTasks` yet, since it does not authenticate callers.
 
 ## Client: call a remote A2A Agent
 

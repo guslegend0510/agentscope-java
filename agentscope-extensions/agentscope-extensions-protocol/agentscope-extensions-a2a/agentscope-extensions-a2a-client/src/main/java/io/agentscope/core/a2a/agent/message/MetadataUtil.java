@@ -19,7 +19,9 @@ package io.agentscope.core.a2a.agent.message;
 import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.util.JsonUtils;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
 import org.a2aproject.sdk.spec.DataPart;
 import org.a2aproject.sdk.spec.FilePart;
 import org.a2aproject.sdk.spec.Part;
@@ -94,7 +96,8 @@ public final class MetadataUtil {
             return new TextPart(textPart.text(), toJsonValues(metadata));
         }
         if (part instanceof DataPart dataPart) {
-            return new DataPart(toJsonValue(dataPart.data()), toJsonValues(metadata));
+            return new DataPart(
+                    withoutNullValues(toJsonValue(dataPart.data())), toJsonValues(metadata));
         }
         if (part instanceof FilePart filePart) {
             return new FilePart(filePart.file(), toJsonValues(metadata));
@@ -104,14 +107,25 @@ public final class MetadataUtil {
 
     /**
      * Convert values to JSON values: maps, lists, strings, numbers, booleans and {@code null}. The
-     * A2A SDK writes any other object, such as a POJO or an enum, as {@code null}.
+     * A2A SDK writes any other object, such as a POJO or an enum, as {@code null}. Entries with a
+     * {@code null} value are left out, as A2A 0.3 types cannot hold them; a missing entry reads the
+     * same.
      *
      * @param values the values to convert
      * @return the converted values, or {@code null} if {@code values} is {@code null}
      */
     @SuppressWarnings("unchecked")
     public static Map<String, Object> toJsonValues(Map<String, Object> values) {
-        return (Map<String, Object>) toJsonValue(values);
+        return (Map<String, Object>) withoutNullValues(toJsonValue(values));
+    }
+
+    private static Object withoutNullValues(Object value) {
+        if (!(value instanceof Map<?, ?> map)) {
+            return value;
+        }
+        Map<Object, Object> result = new LinkedHashMap<>(map);
+        result.values().removeIf(Objects::isNull);
+        return result;
     }
 
     private static Object toJsonValue(Object value) {

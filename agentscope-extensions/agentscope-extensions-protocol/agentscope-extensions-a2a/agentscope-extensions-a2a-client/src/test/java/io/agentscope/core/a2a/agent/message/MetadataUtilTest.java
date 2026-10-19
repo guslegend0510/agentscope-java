@@ -21,7 +21,9 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 import io.agentscope.core.message.MsgRole;
+import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 import org.a2aproject.sdk.spec.DataPart;
 import org.a2aproject.sdk.spec.FilePart;
 import org.a2aproject.sdk.spec.FileWithUri;
@@ -66,5 +68,28 @@ class MetadataUtilTest {
         assertEquals(
                 Map.of("role", "USER"), MetadataUtil.toJsonValues(Map.of("role", MsgRole.USER)));
         assertNull(MetadataUtil.toJsonValues(null));
+    }
+
+    @Test
+    @DisplayName("Should leave out top-level null values, which A2A 0.3 types cannot hold")
+    void testNullValuesAreLeftOut() {
+        Map<String, Object> nested = new HashMap<>();
+        nested.put("missing", null);
+        Map<String, Object> values = new HashMap<>();
+        values.put("kept", "value");
+        values.put("missing", null);
+        values.put("nested", nested);
+
+        DataPart copy =
+                assertInstanceOf(
+                        DataPart.class,
+                        MetadataUtil.withMetadata(
+                                new DataPart(values, values), Map.of("added", 2)));
+
+        assertEquals(Set.of("kept", "nested"), MetadataUtil.toJsonValues(values).keySet());
+        assertEquals(Set.of("kept", "nested"), ((Map<?, ?>) copy.data()).keySet());
+        assertEquals(Set.of("kept", "nested", "added"), copy.metadata().keySet());
+        // A2A 0.3 types only copy the top-level map, so nested null values are kept.
+        assertEquals(nested, copy.metadata().get("nested"));
     }
 }

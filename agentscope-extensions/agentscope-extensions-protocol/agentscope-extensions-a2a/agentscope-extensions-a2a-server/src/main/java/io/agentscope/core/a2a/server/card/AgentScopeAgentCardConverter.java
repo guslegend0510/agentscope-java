@@ -26,6 +26,7 @@ import java.util.Set;
 import org.a2aproject.sdk.spec.AgentCapabilities;
 import org.a2aproject.sdk.spec.AgentCard;
 import org.a2aproject.sdk.spec.AgentInterface;
+import org.a2aproject.sdk.spec.Legacy_0_3_AgentInterface;
 import org.a2aproject.sdk.spec.SecurityRequirement;
 import org.a2aproject.sdk.spec.TransportProtocol;
 import org.slf4j.Logger;
@@ -58,6 +59,8 @@ import org.slf4j.LoggerFactory;
  *     per available transport.</li>
  *     <li>protocolVersion of each interface: only from agentscope implementation, not supported
  *     to config. current version is `1.0`</li>
+ *     <li>url/preferredTransport/additionalInterfaces: the fields A2A 0.3 clients read, from the
+ *     preferred interface and all the supported interfaces.</li>
  * </ul>
  */
 public class AgentScopeAgentCardConverter {
@@ -81,6 +84,9 @@ public class AgentScopeAgentCardConverter {
                 createAdditionalInterfaces(agentCard, availableTransports);
         AgentInterface preferredTransportInterface =
                 getPreferredTransport(agentCard, additionalInterfaces);
+        List<AgentInterface> supportedInterfaces =
+                supportedInterfaces(preferredTransportInterface, additionalInterfaces);
+        AgentInterface preferred = supportedInterfaces.get(0);
         return AgentCard.builder()
                 .name(getName(agentCard, agentRunner))
                 .description(getDescription(agentCard, agentRunner))
@@ -94,8 +100,17 @@ public class AgentScopeAgentCardConverter {
                 .securitySchemes(agentCard.getSecuritySchemes())
                 .securityRequirements(toSecurityRequirements(agentCard.getSecurity()))
                 .iconUrl(agentCard.getIconUrl())
-                .supportedInterfaces(
-                        supportedInterfaces(preferredTransportInterface, additionalInterfaces))
+                .supportedInterfaces(supportedInterfaces)
+                // A2A 0.3 clients find the agent with these fields instead.
+                .url(preferred.url())
+                .preferredTransport(preferred.protocolBinding())
+                .additionalInterfaces(
+                        supportedInterfaces.stream()
+                                .map(
+                                        each ->
+                                                new Legacy_0_3_AgentInterface(
+                                                        each.protocolBinding(), each.url()))
+                                .toList())
                 .build();
     }
 

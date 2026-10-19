@@ -10,7 +10,7 @@ en_link: /v2/en/integration/protocol/a2a
 
 客户端可以单独使用；服务端还需要客户端模块来转换消息。
 
-不支持 A2A 0.3：客户端无法调用 A2A 0.3 的 Agent；A2A 0.3 客户端的请求不带 `A2A-Version` 请求头，服务端会以版本错误拒绝。服务端暂不支持 `ListTasks`，因为还不认证调用方。
+服务端同时接受 A2A 1.0 和 A2A 0.3 的请求：不带 `A2A-Version` 请求头（A2A 0.3 客户端就是这样）或版本为 0.x 的请求按 A2A 0.3 处理，Agent Card 也带有 A2A 0.3 客户端读取的 `url`、`preferredTransport` 和 `additionalInterfaces`；其他版本以版本错误拒绝。如果只想接受 A2A 1.0，可以在网关上拒绝不带 `A2A-Version` 请求头的请求。客户端暂不能调用 A2A 0.3 的 Agent。服务端暂不支持 `ListTasks`，因为还不认证调用方。
 
 ## 客户端：调用远端 A2A Agent
 

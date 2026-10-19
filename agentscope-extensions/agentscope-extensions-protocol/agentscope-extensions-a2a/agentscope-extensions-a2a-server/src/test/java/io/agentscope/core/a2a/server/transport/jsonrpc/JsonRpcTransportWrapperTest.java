@@ -32,12 +32,30 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.a2a.server.constants.A2aServerConstants;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.Flow;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.a2aproject.sdk.A2A;
+import org.a2aproject.sdk.compat03.spec.CancelTaskRequest_v0_3;
+import org.a2aproject.sdk.compat03.spec.DeleteTaskPushNotificationConfigRequest_v0_3;
+import org.a2aproject.sdk.compat03.spec.GetAuthenticatedExtendedCardRequest_v0_3;
+import org.a2aproject.sdk.compat03.spec.GetTaskPushNotificationConfigRequest_v0_3;
+import org.a2aproject.sdk.compat03.spec.GetTaskRequest_v0_3;
+import org.a2aproject.sdk.compat03.spec.ListTaskPushNotificationConfigRequest_v0_3;
+import org.a2aproject.sdk.compat03.spec.Message_v0_3;
+import org.a2aproject.sdk.compat03.spec.SendMessageRequest_v0_3;
+import org.a2aproject.sdk.compat03.spec.SendMessageResponse_v0_3;
+import org.a2aproject.sdk.compat03.spec.SendStreamingMessageRequest_v0_3;
+import org.a2aproject.sdk.compat03.spec.SendStreamingMessageResponse_v0_3;
+import org.a2aproject.sdk.compat03.spec.SetTaskPushNotificationConfigRequest_v0_3;
+import org.a2aproject.sdk.compat03.spec.TaskResubscriptionRequest_v0_3;
+import org.a2aproject.sdk.compat03.spec.TextPart_v0_3;
+import org.a2aproject.sdk.compat03.transport.jsonrpc.handler.JSONRPCHandler_v0_3;
 import org.a2aproject.sdk.jsonrpc.common.wrappers.CancelTaskRequest;
 import org.a2aproject.sdk.jsonrpc.common.wrappers.CancelTaskResponse;
 import org.a2aproject.sdk.jsonrpc.common.wrappers.CreateTaskPushNotificationConfigRequest;
@@ -593,6 +611,351 @@ class JsonRpcTransportWrapperTest {
             verify(jsonRpcHandler, never())
                     .onGetTask(any(GetTaskRequest.class), any(ServerCallContext.class));
         }
+    }
+
+    @Nested
+    @DisplayName("A2A 0.3 Request Tests")
+    class A2a03RequestTests {
+
+        private JSONRPCHandler_v0_3 jsonRpcHandler03;
+
+        private JsonRpcTransportWrapper multiVersionWrapper;
+
+        @BeforeEach
+        void setUpA2a03Handler() {
+            jsonRpcHandler03 = mock(JSONRPCHandler_v0_3.class);
+            multiVersionWrapper = new JsonRpcTransportWrapper(jsonRpcHandler, jsonRpcHandler03);
+        }
+
+        @Test
+        @DisplayName("Should hand requests without an A2A 1.x version to the A2A 0.3 handler")
+        void testRoutesA2a03Requests() {
+            when(jsonRpcHandler03.onMessageSend(
+                            any(SendMessageRequest_v0_3.class), any(ServerCallContext.class)))
+                    .thenReturn(new SendMessageResponse_v0_3("1", agentMessage03("Hi")));
+            String body = request("message/send", "{\"message\":" + USER_MESSAGE_03 + "}");
+
+            for (Map<String, String> headers :
+                    List.of(
+                            Map.<String, String>of(),
+                            Map.of("A2A-Version", ""),
+                            Map.of("a2a-version", "0.3"))) {
+                JsonNode message =
+                        assertResult(multiVersionWrapper.handleRequest(body, headers, Map.of()));
+
+                assertEquals("message", message.path("kind").asText(), headers.toString());
+                assertEquals(
+                        "Hi",
+                        message.path("parts").path(0).path("text").asText(),
+                        headers.toString());
+            }
+            verifyNoInteractions(jsonRpcHandler);
+        }
+
+        @Test
+        @DisplayName(
+                "Should read A2A 0.3 requests with null values, which the A2A 0.3 types reject")
+        void testA2a03RequestWithNullValues() {
+            // AgentScope clients before A2A 1.0 send a null message source for unnamed messages.
+            ArgumentCaptor<SendMessageRequest_v0_3> request =
+                    ArgumentCaptor.forClass(SendMessageRequest_v0_3.class);
+            when(jsonRpcHandler03.onMessageSend(request.capture(), any(ServerCallContext.class)))
+                    .thenReturn(new SendMessageResponse_v0_3("1", agentMessage03("Hi")));
+            String message =
+                    "{\"kind\":\"message\",\"messageId\":\"message123\",\"role\":\"user\","
+                            + "\"metadata\":{\"key\":null},\"parts\":[{\"kind\":\"text\","
+                            + "\"text\":\"Hello\",\"metadata\":{\"_agentscope_msg_source\":null,"
+                            + "\"_agentscope_block_type\":\"text\"}}]}";
+
+            Object result =
+                    multiVersionWrapper.handleRequest(
+                            request("message/send", "{\"message\":" + message + "}"),
+                            Map.of(),
+                            Map.of());
+
+            assertEquals("Hi", assertResult(result).path("parts").path(0).path("text").asText());
+            Message_v0_3 received = request.getValue().getParams().message();
+            assertEquals(Map.of(), received.metadata());
+            assertEquals(
+                    Map.of("_agentscope_block_type", "text"),
+                    assertInstanceOf(TextPart_v0_3.class, received.parts().get(0)).metadata());
+        }
+
+        @Test
+        @DisplayName("Should hand each A2A 0.3 method to the matching handler method")
+        void testA2a03Methods() {
+            Map<String, String> params = new LinkedHashMap<>();
+            params.put(CancelTaskRequest_v0_3.METHOD, "{\"id\":\"task123\"}");
+            params.put(
+                    SetTaskPushNotificationConfigRequest_v0_3.METHOD,
+                    "{\"taskId\":\"task123\","
+                            + "\"pushNotificationConfig\":{\"url\":\"https://example.com/hook\"}}");
+            params.put(GetTaskPushNotificationConfigRequest_v0_3.METHOD, "{\"id\":\"task123\"}");
+            params.put(ListTaskPushNotificationConfigRequest_v0_3.METHOD, "{\"id\":\"task123\"}");
+            params.put(
+                    DeleteTaskPushNotificationConfigRequest_v0_3.METHOD,
+                    "{\"id\":\"task123\",\"pushNotificationConfigId\":\"config1\"}");
+            params.put(GetAuthenticatedExtendedCardRequest_v0_3.METHOD, "{}");
+            params.put(TaskResubscriptionRequest_v0_3.METHOD, "{\"id\":\"task123\"}");
+            when(jsonRpcHandler03.onResubscribeToTask(
+                            any(TaskResubscriptionRequest_v0_3.class),
+                            any(ServerCallContext.class)))
+                    .thenReturn(streamingResponses03());
+
+            params.forEach(
+                    (method, methodParams) ->
+                            multiVersionWrapper.handleRequest(
+                                    request(method, methodParams), Map.of(), Map.of()));
+
+            verify(jsonRpcHandler03)
+                    .onCancelTask(any(CancelTaskRequest_v0_3.class), any(ServerCallContext.class));
+            verify(jsonRpcHandler03)
+                    .setPushNotificationConfig(
+                            any(SetTaskPushNotificationConfigRequest_v0_3.class),
+                            any(ServerCallContext.class));
+            verify(jsonRpcHandler03)
+                    .getPushNotificationConfig(
+                            any(GetTaskPushNotificationConfigRequest_v0_3.class),
+                            any(ServerCallContext.class));
+            verify(jsonRpcHandler03)
+                    .listPushNotificationConfig(
+                            any(ListTaskPushNotificationConfigRequest_v0_3.class),
+                            any(ServerCallContext.class));
+            verify(jsonRpcHandler03)
+                    .deletePushNotificationConfig(
+                            any(DeleteTaskPushNotificationConfigRequest_v0_3.class),
+                            any(ServerCallContext.class));
+            verify(jsonRpcHandler03)
+                    .onGetAuthenticatedExtendedCardRequest(
+                            any(GetAuthenticatedExtendedCardRequest_v0_3.class),
+                            any(ServerCallContext.class));
+            verify(jsonRpcHandler03)
+                    .onResubscribeToTask(
+                            any(TaskResubscriptionRequest_v0_3.class),
+                            any(ServerCallContext.class));
+        }
+
+        @Test
+        @DisplayName("Should hand other versions to the A2A 1.0 handler, which checks them")
+        void testRoutesOtherVersionsToA2a10Handler() {
+            when(jsonRpcHandler.onGetTask(any(GetTaskRequest.class), any(ServerCallContext.class)))
+                    .thenReturn(new GetTaskResponse("1", TASK));
+            String body = request("GetTask", "{\"id\":\"task123\"}");
+
+            for (String version : List.of("1.0", "1.1", "2.0")) {
+                Object result =
+                        multiVersionWrapper.handleRequest(
+                                body, Map.of("A2A-Version", version), Map.of());
+
+                assertEquals("task123", assertResult(result).path("id").asText(), version);
+            }
+            verifyNoInteractions(jsonRpcHandler03);
+        }
+
+        @Test
+        @DisplayName("Should mark an A2A 0.3 request context like an A2A 1.0 one")
+        void testA2a03ContextState() {
+            ArgumentCaptor<ServerCallContext> context =
+                    ArgumentCaptor.forClass(ServerCallContext.class);
+            when(jsonRpcHandler03.onMessageSendStream(
+                            any(SendStreamingMessageRequest_v0_3.class), context.capture()))
+                    .thenReturn(streamingResponses03("Hi"));
+            Map<String, String> headers = Map.of("Content-Type", "application/json");
+
+            multiVersionWrapper.handleRequest(
+                    request("message/stream", "{\"message\":" + USER_MESSAGE_03 + "}"),
+                    headers,
+                    Map.of());
+
+            Map<String, Object> state = context.getValue().getState();
+            assertEquals("message/stream", state.get(JSONRPCContextKeys.METHOD_NAME_KEY));
+            assertEquals(true, state.get(A2aServerConstants.ContextKeys.IS_STREAM_KEY));
+            assertEquals(headers, state.get(JSONRPCContextKeys.HEADERS_KEY));
+            assertEquals("0.3", context.getValue().getRequestedProtocolVersion());
+        }
+
+        @Test
+        @DisplayName("Should stream A2A 0.3 responses as JSON")
+        void testA2a03Streaming() {
+            when(jsonRpcHandler03.onMessageSendStream(
+                            any(SendStreamingMessageRequest_v0_3.class),
+                            any(ServerCallContext.class)))
+                    .thenReturn(streamingResponses03("Hello, ", "world"));
+
+            Object result =
+                    multiVersionWrapper.handleRequest(
+                            request("message/stream", "{\"message\":" + USER_MESSAGE_03 + "}"),
+                            Map.of(),
+                            Map.of());
+
+            StepVerifier.create(assertInstanceOf(Flux.class, result))
+                    .assertNext(json -> assertEquals("Hello, ", streamedText(json)))
+                    .assertNext(json -> assertEquals("world", streamedText(json)))
+                    .verifyComplete();
+        }
+
+        @Test
+        @DisplayName("Should answer invalid A2A 0.3 requests with the error and the request id")
+        void testInvalidA2a03Requests() {
+            Map<String, Integer> errors = new LinkedHashMap<>();
+            errors.put(
+                    "{\"jsonrpc\":\"1.0\",\"id\":\"7\",\"method\":\"message/send\",\"params\":{}}",
+                    new InvalidRequestError().getCode());
+            errors.put(
+                    "{\"jsonrpc\":\"2.0\",\"id\":\"7\",\"params\":{}}",
+                    new InvalidRequestError().getCode());
+            errors.put(
+                    "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"SendMessage\",\"params\":{}}",
+                    new MethodNotFoundError().getCode());
+            errors.put(
+                    "{\"jsonrpc\":\"2.0\",\"id\":\"7\",\"method\":\"message/send\","
+                            + "\"params\":\"text\"}",
+                    new InvalidParamsError().getCode());
+
+            errors.forEach(
+                    (body, code) -> {
+                        JsonNode response =
+                                readJson(
+                                        multiVersionWrapper.handleRequest(
+                                                body, Map.of(), Map.of()));
+
+                        assertEquals("7", response.path("id").asText(), body);
+                        assertEquals(code, response.path("error").path("code").asInt(), body);
+                    });
+            verifyNoInteractions(jsonRpcHandler, jsonRpcHandler03);
+        }
+
+        @Test
+        @DisplayName("Should answer an invalid A2A 0.3 request id as an invalid request without id")
+        void testInvalidA2a03RequestId() {
+            String body =
+                    "{\"jsonrpc\":\"2.0\",\"id\":{\"value\":1},\"method\":\"tasks/get\","
+                            + "\"params\":{\"id\":\"task123\"}}";
+
+            JsonNode response =
+                    readJson(multiVersionWrapper.handleRequest(body, Map.of(), Map.of()));
+
+            assertFalse(response.hasNonNull("id"), response.toString());
+            assertEquals(
+                    new InvalidRequestError().getCode(),
+                    response.path("error").path("code").asInt());
+            verifyNoInteractions(jsonRpcHandler03);
+        }
+
+        @Test
+        @DisplayName("Should answer an A2A 0.3 handler failure with an internal error")
+        void testA2a03HandlerFailure() {
+            when(jsonRpcHandler03.onGetTask(
+                            any(GetTaskRequest_v0_3.class), any(ServerCallContext.class)))
+                    .thenThrow(new IllegalStateException("boom"));
+
+            JsonNode response =
+                    readJson(
+                            multiVersionWrapper.handleRequest(
+                                    request("tasks/get", "{\"id\":\"task123\"}"),
+                                    Map.of(),
+                                    Map.of()));
+
+            assertEquals("1", response.path("id").asText());
+            assertEquals(INTERNAL_ERROR_CODE, response.path("error").path("code").asInt());
+        }
+
+        @Test
+        @DisplayName("Should answer an unserializable A2A 0.3 response with an internal error")
+        void testUnserializableA2a03Response() {
+            when(jsonRpcHandler03.onMessageSend(
+                            any(SendMessageRequest_v0_3.class), any(ServerCallContext.class)))
+                    .thenReturn(new SendMessageResponse_v0_3("1", unserializableMessage03()));
+
+            JsonNode response =
+                    readJson(
+                            multiVersionWrapper.handleRequest(
+                                    request(
+                                            "message/send",
+                                            "{\"message\":" + USER_MESSAGE_03 + "}"),
+                                    Map.of(),
+                                    Map.of()));
+
+            assertEquals("1", response.path("id").asText());
+            assertEquals(INTERNAL_ERROR_CODE, response.path("error").path("code").asInt());
+        }
+
+        @Test
+        @DisplayName("Should end an A2A 0.3 stream with an internal error and stop reading it")
+        void testUnserializableA2a03StreamedResponseEndsStream() {
+            AtomicBoolean cancelled = new AtomicBoolean();
+            Flux<SendStreamingMessageResponse_v0_3> responses =
+                    Flux.concat(
+                                    Flux.just(
+                                            new SendStreamingMessageResponse_v0_3(
+                                                    "1", agentMessage03("before")),
+                                            new SendStreamingMessageResponse_v0_3(
+                                                    "1", unserializableMessage03()),
+                                            new SendStreamingMessageResponse_v0_3(
+                                                    "1", agentMessage03("after"))),
+                                    Flux.never())
+                            .doOnCancel(() -> cancelled.set(true));
+            when(jsonRpcHandler03.onMessageSendStream(
+                            any(SendStreamingMessageRequest_v0_3.class),
+                            any(ServerCallContext.class)))
+                    .thenReturn(FlowAdapters.toFlowPublisher(responses));
+
+            Object result =
+                    multiVersionWrapper.handleRequest(
+                            request("message/stream", "{\"message\":" + USER_MESSAGE_03 + "}"),
+                            Map.of(),
+                            Map.of());
+
+            StepVerifier.create(assertInstanceOf(Flux.class, result))
+                    .assertNext(json -> assertEquals("before", streamedText(json)))
+                    .assertNext(
+                            json -> {
+                                JsonNode response = readJson(json);
+                                assertEquals("1", response.path("id").asText());
+                                assertEquals(
+                                        INTERNAL_ERROR_CODE,
+                                        response.path("error").path("code").asInt());
+                            })
+                    .expectComplete()
+                    .verify(Duration.ofSeconds(5));
+            assertTrue(cancelled.get(), "the subscription to the responses should be cancelled");
+        }
+    }
+
+    private static final String USER_MESSAGE_03 =
+            "{\"kind\":\"message\",\"messageId\":\"message123\",\"role\":\"user\","
+                    + "\"parts\":[{\"kind\":\"text\",\"text\":\"Hello\"}]}";
+
+    private static Message_v0_3 agentMessage03(String text) {
+        return new Message_v0_3.Builder()
+                .role(Message_v0_3.Role.AGENT)
+                .parts(new TextPart_v0_3(text))
+                .messageId("message-" + text)
+                .build();
+    }
+
+    /** An A2A 0.3 message the A2A SDK fails to write. */
+    private static Message_v0_3 unserializableMessage03() {
+        return new Message_v0_3.Builder()
+                .role(Message_v0_3.Role.AGENT)
+                .parts(new TextPart_v0_3("text", Map.of("value", Optional.of(1))))
+                .messageId("message-unserializable")
+                .build();
+    }
+
+    private static Flow.Publisher<SendStreamingMessageResponse_v0_3> streamingResponses03(
+            String... texts) {
+        return burstPublisher(
+                Arrays.stream(texts)
+                        .map(
+                                text ->
+                                        new SendStreamingMessageResponse_v0_3(
+                                                "1", agentMessage03(text)))
+                        .toList());
+    }
+
+    private static String streamedText(Object json) {
+        return assertResult(json).path("parts").path(0).path("text").asText();
     }
 
     private static final Task TASK =

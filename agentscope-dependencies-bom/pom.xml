@@ -399,6 +399,11 @@
                 <artifactId>a2a-java-sdk-transport-jsonrpc</artifactId>
                 <version>${a2a-java-sdk.version}</version>
             </dependency>
+            <dependency>
+                <groupId>org.a2aproject.sdk</groupId>
+                <artifactId>a2a-java-sdk-compat-0.3-transport-jsonrpc</artifactId>
+                <version>${a2a-java-sdk.version}</version>
+            </dependency>
 
             <!-- Jedis client for Redis-based session implementation -->
             <dependency>

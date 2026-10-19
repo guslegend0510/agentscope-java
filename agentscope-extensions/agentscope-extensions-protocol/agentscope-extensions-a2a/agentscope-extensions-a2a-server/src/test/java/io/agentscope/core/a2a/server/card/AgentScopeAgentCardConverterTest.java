@@ -34,6 +34,7 @@ import org.a2aproject.sdk.spec.AgentCard;
 import org.a2aproject.sdk.spec.AgentInterface;
 import org.a2aproject.sdk.spec.AgentProvider;
 import org.a2aproject.sdk.spec.AgentSkill;
+import org.a2aproject.sdk.spec.Legacy_0_3_AgentInterface;
 import org.a2aproject.sdk.spec.MutualTLSSecurityScheme;
 import org.a2aproject.sdk.spec.SecurityRequirement;
 import org.a2aproject.sdk.spec.SecurityScheme;
@@ -140,6 +141,28 @@ class AgentScopeAgentCardConverterTest {
                 .supportedInterfaces()
                 .forEach(each -> assertEquals("1.0", each.protocolVersion()));
         assertFalse(agentCard.capabilities().extendedAgentCard());
+    }
+
+    @Test
+    @DisplayName("Should add the fields A2A 0.3 clients read to find the agent")
+    void testCreateAgentCardWithA2a03Fields() {
+        when(configurableAgentCard.getUrl()).thenReturn("https://example.com/agent");
+        when(configurableAgentCard.getPreferredTransport()).thenReturn("JSONRPC");
+        when(configurableAgentCard.getAdditionalInterfaces())
+                .thenReturn(List.of(new AgentInterface("HTTP+JSON", "https://example.com/rest")));
+        when(agentRunner.getAgentName()).thenReturn("Runner Agent Name");
+        when(agentRunner.getAgentDescription()).thenReturn("Runner Agent Description");
+
+        AgentCard agentCard =
+                builder.createAgentCard(configurableAgentCard, agentRunner, availableTransports);
+
+        assertEquals("https://example.com/agent", agentCard.url());
+        assertEquals("JSONRPC", agentCard.preferredTransport());
+        assertEquals(
+                List.of(
+                        new Legacy_0_3_AgentInterface("JSONRPC", "https://example.com/agent"),
+                        new Legacy_0_3_AgentInterface("HTTP+JSON", "https://example.com/rest")),
+                agentCard.additionalInterfaces());
     }
 
     @Test

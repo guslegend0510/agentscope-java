@@ -29,6 +29,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.concurrent.Flow;
 import org.a2aproject.sdk.common.A2AHeaders;
+import org.a2aproject.sdk.compat03.transport.jsonrpc.handler.JSONRPCHandler_v0_3;
 import org.a2aproject.sdk.grpc.utils.JSONRPCUtils;
 import org.a2aproject.sdk.grpc.utils.ProtoUtils;
 import org.a2aproject.sdk.jsonrpc.common.json.IdJsonMappingException;
@@ -92,6 +93,9 @@ import reactor.core.publisher.SynchronousSink;
  *     <li>serialize responses to JSON with the A2A SDK, so they do not depend on how the hosting
  *     framework serializes objects.</li>
  * </ul>
+ * <p> Requests are read as A2A 1.0 ones, unless they come without an A2A 1.x
+ * {@code A2A-Version} header and an A2A 0.3 handler is set, see
+ * {@link #JsonRpcTransportWrapper(JSONRPCHandler, JSONRPCHandler_v0_3)}.
  */
 public class JsonRpcTransportWrapper implements TransportWrapper<String, Object> {
 
@@ -109,8 +113,31 @@ public class JsonRpcTransportWrapper implements TransportWrapper<String, Object>
 
     private final JSONRPCHandler jsonRpcHandler;
 
+    private final A2a03JsonRpcHandler a2a03Handler;
+
+    /**
+     * Creates a wrapper for A2A 1.0 only: requests without an A2A 1.x {@code A2A-Version} header
+     * are rejected.
+     *
+     * @param jsonrpcHandler the handler of A2A 1.0 requests
+     */
     public JsonRpcTransportWrapper(JSONRPCHandler jsonrpcHandler) {
+        this(jsonrpcHandler, null);
+    }
+
+    /**
+     * Creates a wrapper for A2A 1.0 and A2A 0.3. Requests without an {@code A2A-Version} header, as
+     * A2A 0.3 clients send them, or with a 0.x version go to {@code jsonRpcHandler03}; the others go
+     * to {@code jsonrpcHandler}, which rejects the versions it does not support.
+     *
+     * @param jsonrpcHandler the handler of A2A 1.0 requests
+     * @param jsonRpcHandler03 the handler of A2A 0.3 requests, or {@code null} to reject them
+     */
+    public JsonRpcTransportWrapper(
+            JSONRPCHandler jsonrpcHandler, JSONRPCHandler_v0_3 jsonRpcHandler03) {
         this.jsonRpcHandler = jsonrpcHandler;
+        this.a2a03Handler =
+                null == jsonRpcHandler03 ? null : new A2a03JsonRpcHandler(jsonRpcHandler03);
     }
 
     @Override
@@ -138,6 +165,10 @@ public class JsonRpcTransportWrapper implements TransportWrapper<String, Object>
             }
             if (!JsonParser.parseString(body).isJsonObject()) {
                 return toJson(new A2AErrorResponse(new InvalidRequestError()));
+            }
+            if (null != a2a03Handler
+                    && A2a03JsonRpcHandler.isA2a03(context.getRequestedProtocolVersion())) {
+                return a2a03Handler.handle(body, headers);
             }
             request = JSONRPCUtils.parseRequestBody(body, null);
         } catch (InvalidParamsJsonMappingException e) {
@@ -305,14 +336,17 @@ public class JsonRpcTransportWrapper implements TransportWrapper<String, Object>
         }
 
         String method = (String) context.getState().get(JSONRPCContextKeys.METHOD_NAME_KEY);
-        Object requestId = request.getId();
-        return applyStreamingBackpressureBuffer(
-                        Flux.from(FlowAdapters.toPublisher(publisher)), method, requestId)
+        return stream(Flux.from(FlowAdapters.toPublisher(publisher)), method, request.getId());
+    }
+
+    /** Buffers the streamed responses to a request, for any protocol version. */
+    static <T> Flux<T> stream(Flux<T> responses, String method, Object requestId) {
+        return applyStreamingBackpressureBuffer(responses, method, requestId)
                 .delaySubscription(Duration.ofMillis(10));
     }
 
-    private Flux<? extends A2AResponse<?>> applyStreamingBackpressureBuffer(
-            Flux<? extends A2AResponse<?>> stream, String method, Object requestId) {
+    private static <T> Flux<T> applyStreamingBackpressureBuffer(
+            Flux<T> stream, String method, Object requestId) {
         if (STREAMING_BACKPRESSURE_BUFFER_SIZE <= 0) {
             return stream.onBackpressureBuffer();
         }
@@ -329,7 +363,7 @@ public class JsonRpcTransportWrapper implements TransportWrapper<String, Object>
                 BufferOverflowStrategy.ERROR);
     }
 
-    private String summarizeResponse(A2AResponse<?> response) {
+    private static String summarizeResponse(Object response) {
         if (response == null) {
             return "responseType=null";
         }
